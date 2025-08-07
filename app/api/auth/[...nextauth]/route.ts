@@ -6,7 +6,13 @@ import { compare } from "bcryptjs";
 
 export const authOptions = {
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "database" },
+
+  // ←–– switch to JWT
+  session: { strategy: "jwt" },
+  jwt: {
+    secret: process.env.NEXTAUTH_SECRET, 
+  },
+
   providers: [
     CredentialsProvider({
       name: "Email",
@@ -26,13 +32,21 @@ export const authOptions = {
       },
     }),
   ],
+
   callbacks: {
-    async session({ session, user }) {
-      session.user.id = user.id;
-      session.user.role = user.role;
+    async jwt({ token, user }) {
+      // attach role on first sign-in
+      if (user) token.role = user.role;
+      return token;
+    },
+    async session({ session, token }) {
+      // expose role and id on session
+      session.user.id = token.sub;
+      session.user.role = token.role;
       return session;
     },
   },
+
   pages: {
     signIn: "/auth/signin",
   },

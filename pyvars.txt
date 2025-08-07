@@ -1,0 +1,12 @@
+# Base URL of your running app
+BASE_URL=http://localhost:3000
+
+# Admin user to create & test
+ADMIN_EMAIL=admin@vexo.com
+ADMIN_PASSWORD=adminpass
+ADMIN_NAME=Alice Admin
+
+# Customer user to create & test
+CUSTOMER_EMAIL=joe@vexo.com
+CUSTOMER_PASSWORD=joepass
+CUSTOMER_NAME=Joe Customer
