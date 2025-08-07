@@ -1,26 +1,35 @@
+// app/api/shipments/[orderId]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 
-export async function POST(req: NextRequest, { params }: { params: { orderId: string } }) {
-  await requireAdmin(req);
+// POST /api/shipments/:orderId (admin)
+export async function POST(req: NextRequest, { params }: { params: Promise<{ orderId: string }> }) {
+  const sessionOrResponse = await requireAdmin(req);
+  if (sessionOrResponse instanceof Response) return sessionOrResponse;
+
+  const { orderId } = await params;
   const { carrier, trackingNumber } = await req.json();
+
   const shipment = await prisma.shipment.create({
-    data: { orderId: params.orderId, carrier, trackingNumber, status: "label_created" },
+    data: { orderId, carrier, trackingNumber, status: "label_created" },
   });
-  // Optionally update order.status → PROCESSING or SHIPPED
-  await prisma.order.update({
-    where: { id: params.orderId },
-    data: { status: "SHIPPED" },
-  });
+
+  await prisma.order.update({ where: { id: orderId }, data: { status: "SHIPPED" } });
+
   return NextResponse.json(shipment);
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: { orderId: string } }) {
-  await requireAdmin(req);
-  const updates = await req.json(); // e.g. { status: "in_transit", deliveredAt: Date }
+// PATCH /api/shipments/:orderId (admin)
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ orderId: string }> }) {
+  const sessionOrResponse = await requireAdmin(req);
+  if (sessionOrResponse instanceof Response) return sessionOrResponse;
+
+  const { orderId } = await params;
+  const updates = await req.json();
+
   const shipment = await prisma.shipment.update({
-    where: { orderId: params.orderId },
+    where: { orderId },
     data: updates,
   });
   return NextResponse.json(shipment);

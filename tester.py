@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-import os
 import sys
 import requests
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
-
-# ─── Load vars from pyvars.txt ─────────────────────────────────────────────────
 
 def load_pyvars(path="pyvars.txt"):
     env = {}
@@ -17,166 +14,139 @@ def load_pyvars(path="pyvars.txt"):
     for line in p.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"): continue
-        if "=" not in line:
-            print(f"Skipping invalid line: {line}")
-            continue
+        if "=" not in line: continue
         k, v = line.split("=", 1)
         env[k.strip()] = v.strip()
     return env
 
 cfg = load_pyvars()
-
 BASE_URL           = cfg.get("BASE_URL", "http://localhost:3000")
-ADMIN_EMAIL        = cfg.get("ADMIN_EMAIL")
-ADMIN_PASSWORD     = cfg.get("ADMIN_PASSWORD")
+ADMIN_EMAIL        = cfg["ADMIN_EMAIL"]
+ADMIN_PASSWORD     = cfg["ADMIN_PASSWORD"]
 ADMIN_NAME         = cfg.get("ADMIN_NAME", "Admin")
-CUSTOMER_EMAIL     = cfg.get("CUSTOMER_EMAIL")
-CUSTOMER_PASSWORD  = cfg.get("CUSTOMER_PASSWORD")
+CUSTOMER_EMAIL     = cfg["CUSTOMER_EMAIL"]
+CUSTOMER_PASSWORD  = cfg["CUSTOMER_PASSWORD"]
 CUSTOMER_NAME      = cfg.get("CUSTOMER_NAME", "Customer")
-
-required = ["ADMIN_EMAIL","ADMIN_PASSWORD","CUSTOMER_EMAIL","CUSTOMER_PASSWORD"]
-if any(not cfg.get(k) for k in required):
-    print(f"Please set {', '.join(required)} in pyvars.txt")
-    sys.exit(1)
 
 console = Console()
 
-# ─── Helpers ───────────────────────────────────────────────────────────────────
-
 def signup_user(email, password, name, role):
-    """Calls your /api/auth/signup endpoint to create a new user."""
-    url = f"{BASE_URL}/api/auth/signup"
-    payload = {"email": email, "password": password, "name": name, "role": role}
-    r = requests.post(url, json=payload)
-    return r.status_code, r.text
+    return requests.post(f"{BASE_URL}/api/auth/signup",
+                         json={"email": email, "password": password, "name": name, "role": role})
 
-def get_csrf_token(session):
-    r = session.get(f"{BASE_URL}/api/auth/csrf")
+def get_csrf_token(s):
+    r = s.get(f"{BASE_URL}/api/auth/csrf")
     r.raise_for_status()
-    return r.json()["csrfToken"]
+    return r.json().get("csrfToken")
 
 def login_session(email, password):
     s = requests.Session()
     token = get_csrf_token(s)
-    data = {"csrfToken": token, "email": email, "password": password}
-    r = s.post(f"{BASE_URL}/api/auth/callback/credentials", data=data, allow_redirects=False)
+    r = s.post(f"{BASE_URL}/api/auth/callback/credentials",
+               data={"csrfToken": token, "email": email, "password": password},
+               allow_redirects=False)
     if r.status_code not in (200, 302):
-        raise RuntimeError(f"Login failed for {email}: {r.status_code} {r.text}")
+        raise RuntimeError(f"{email} login failed: {r.status_code} {r.text}")
     return s
 
-def test_endpoint(sess, method, path, **kwargs):
-    url = f"{BASE_URL}{path}"
+def ensure_session(email, password, name, role):
     try:
-        r = sess.request(method, url, **kwargs)
-        ok = 200 <= r.status_code < 300
-    except Exception:
-        return False, None
-    return ok, r.status_code
+        sess = login_session(email, password)
+        console.print(f"[yellow]→[/yellow] Logged in as {role} ({email}), skipping signup")
+        return sess
+    except:
+        console.print(f"[blue]→[/blue] No account for {email}, signing up as {role}")
+        resp = signup_user(email, password, name, role)
+        if resp.status_code not in (200, 201, 409):
+            console.print(f"[red]✖ Signup {role} failed: {resp.status_code} {resp.text}")
+            sys.exit(1)
+        if resp.status_code == 201:
+            console.print(f"[green]✔[/green] Signed up {role} ({email})")
+        return login_session(email, password)
 
-# ─── 1) Sign up Admin & Customer ────────────────────────────────────────────────
+def run(sess, method, path, **kwargs):
+    return sess.request(method, f"{BASE_URL}{path}", **kwargs)
 
-console.print("[bold]1) Signing up users…[/bold]")
-for email, pwd, name, role in [
-    (ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, "ADMIN"),
-    (CUSTOMER_EMAIL, CUSTOMER_PASSWORD, CUSTOMER_NAME, "CUSTOMER"),
-]:
-    code, text = signup_user(email, pwd, name, role)
-    if code not in (200, 201):
-        console.print(f"[red]✖[/red] Signup {role} ({email}) failed: {code} {text}")
-        sys.exit(1)
-    console.print(f"[green]✔[/green] {role} signed up: {email}")
+def result_mark(status, expected):
+    return "[green]✔[/green]" if status in expected else f"[red]✖ ({status})[/red]"
 
-# ─── 2) Log in sessions ───────────────────────────────────────────────────────────
+# 1) Sessions
+console.print("[bold]1) Ensuring Admin & Customer…[/bold]")
+admin_sess    = ensure_session(ADMIN_EMAIL,   ADMIN_PASSWORD,   ADMIN_NAME,    "ADMIN")
+customer_sess = ensure_session(CUSTOMER_EMAIL, CUSTOMER_PASSWORD, CUSTOMER_NAME, "CUSTOMER")
 
-console.print("\n[bold]2) Logging in…[/bold]")
-try:
-    admin_sess    = login_session(ADMIN_EMAIL, ADMIN_PASSWORD)
-    customer_sess = login_session(CUSTOMER_EMAIL, CUSTOMER_PASSWORD)
-    console.print("[green]✔[/green] Admin session established")
-    console.print("[green]✔[/green] Customer session established")
-except Exception as e:
-    console.print(f"[red]✖ Authentication error:[/red] {e}")
+# 2) Create product
+console.print("\n[bold]2) Creating test product…[/bold]")
+prod_resp = run(admin_sess, "POST", "/api/products",
+                json={"name":"TestProd","price":1.23,"imageUrl":"#"})
+if prod_resp.status_code not in (200, 201):
+    console.print(f"[red]✖[/red] Create product failed: {prod_resp.status_code} {prod_resp.text}")
     sys.exit(1)
+pid = prod_resp.json().get("id")
+console.print(f"[green]✔[/green] Product created with ID: {pid}")
 
-# ─── 3) Build & Run Tests ────────────────────────────────────────────────────────
+# 3) Add to cart and create order BEFORE product deletion
+cart_resp = run(customer_sess, "POST", "/api/cart",
+                json={"productId": pid, "quantity": 1})
+if cart_resp.status_code not in (200, 201):
+    console.print(f"[red]✖[/red] Add to cart failed: {cart_resp.status_code} {cart_resp.text}")
+    sys.exit(1)
+cart_item_id = cart_resp.json().get("id")
 
-# We'll store created IDs here
-created = {}
+order_resp = run(customer_sess, "POST", "/api/orders",
+                 json={"items":[{"productId": pid, "quantity": 2}]})
+if order_resp.status_code not in (200, 201):
+    console.print(f"[red]✖[/red] Create order failed: {order_resp.status_code} {order_resp.text}")
+    sys.exit(1)
+order_id = order_resp.json().get("id")
 
-# Define tests as tuples: (method, path, session, optional kwargs)
+# 4) Test matrix with expected statuses
 tests = [
-    # PRODUCTS (public read)
-    ("GET",    "/api/products",                admin_sess,    {}),
-    ("GET",    "/api/products",                customer_sess, {}),
+    # Public reads
+    ("GET",    "/api/products",                admin_sess,    {},                 {200}),
+    ("GET",    "/api/products",                customer_sess, {},                 {200}),
 
-    # PRODUCTS CRUD (admin)
-    ("POST",   "/api/products",                admin_sess,    {"json": {"name":"TestProd","price":1.23,"imageUrl":"#"}}),
+    # Product detail + update (admin)
+    ("GET",    f"/api/products/{pid}",         admin_sess,    {},                 {200}),
+    ("PATCH",  f"/api/products/{pid}",         admin_sess,    {"json":{"price":2.34}}, {200}),
+
+    # Customer forbidden product mutations (expected 403)
+    ("POST",   "/api/products",                customer_sess, {"json":{"name":"Bad","price":9.99}}, {403}),
+    ("PATCH",  f"/api/products/{pid}",         customer_sess, {"json":{"price":9.99}}, {403}),
+    ("DELETE", f"/api/products/{pid}",         customer_sess, {},                 {403}),
+
+    # Cart (customer)
+    ("GET",    "/api/cart",                    customer_sess, {},                 {200}),
+    ("PATCH",  f"/api/cart/{cart_item_id}",    customer_sess, {"json":{"quantity":5}}, {200}),
+    ("DELETE", f"/api/cart/{cart_item_id}",    customer_sess, {},                 {200}),
+
+    # Orders (customer)
+    ("GET",    "/api/orders",                  customer_sess, {},                 {200}),
+    ("GET",    f"/api/orders/{order_id}",      customer_sess, {},                 {200}),
+
+    # Admin: shipments & receipts
+    ("POST",   f"/api/shipments/{order_id}",   admin_sess,    {"json":{"carrier":"DHL","trackingNumber":"XYZ123"}}, {200,201}),
+    ("PATCH",  f"/api/shipments/{order_id}",   admin_sess,    {"json":{"status":"in_transit"}}, {200}),
+    ("POST",   f"/api/receipts/{order_id}",    admin_sess,    {"json":{"pdfUrl":"https://ex.com/r.pdf"}}, {200,201}),
+
+    # Finally: Admin delete product (should succeed)
+    ("DELETE", f"/api/products/{pid}",         admin_sess,    {},                 {200}),
 ]
-
-# 1st run: create product to capture its ID
-console.print("\n[bold]3) Testing endpoints…[/bold]")
-ok, status = test_endpoint(*tests[-1][:3], **tests[-1][3])
-if not ok:
-    console.print(f"[red]✖ Failed to create product:[/red] {status}")
-    sys.exit(1)
-prod = admin_sess.post(f"{BASE_URL}/api/products", json={"name":"TestProd","price":1.23,"imageUrl":"#"}).json()
-created["productId"] = prod["id"]
-
-# Extend product tests
-pid = created["productId"]
-tests += [
-    ("GET",    f"/api/products/{pid}",         admin_sess,    {}),
-    ("PATCH",  f"/api/products/{pid}",         admin_sess,    {"json": {"price":2.34}}),
-    ("DELETE", f"/api/products/{pid}",         admin_sess,    {}),
-    ("POST",   "/api/products",                customer_sess, {"json": {"name":"Bad","price":9.99,"imageUrl":"#"}}),
-    ("PATCH",  f"/api/products/{pid}",         customer_sess, {"json": {"price":9.99}}),
-    ("DELETE", f"/api/products/{pid}",         customer_sess, {}),
-]
-
-# CART for customer
-ok, _ = test_endpoint(customer_sess, "POST", "/api/cart", json={"productId": pid, "quantity": 1})
-if not ok:
-    console.print(f"[red]✖ Cart add failed (you may need at least one product)[/red]")
-    sys.exit(1)
-item = customer_sess.post(f"{BASE_URL}/api/cart", json={"productId": pid,"quantity":1}).json()
-created["cartItemId"] = item["id"]
-
-cid = created["cartItemId"]
-tests += [
-    ("GET",    "/api/cart",                    customer_sess, {}),
-    ("PATCH",  f"/api/cart/{cid}",             customer_sess, {"json": {"quantity": 5}}),
-    ("DELETE", f"/api/cart/{cid}",             customer_sess, {}),
-]
-
-# ORDERS
-ok, _ = test_endpoint(customer_sess, "POST", "/api/orders", json={"items":[{"productId":pid,"quantity":2}]})
-if not ok:
-    console.print(f"[red]✖ Order creation failed[/red]")
-    sys.exit(1)
-order = customer_sess.post(f"{BASE_URL}/api/orders", json={"items":[{"productId":pid,"quantity":2}]}).json()
-created["orderId"] = order["id"]
-
-oid = created["orderId"]
-tests += [
-    ("GET",    "/api/orders",                  customer_sess, {}),
-    ("GET",    f"/api/orders/{oid}",           customer_sess, {}),
-    ("POST",   f"/api/shipments/{oid}",        admin_sess,    {"json": {"carrier":"DHL","trackingNumber":"XYZ123"}}),
-    ("PATCH",  f"/api/shipments/{oid}",        admin_sess,    {"json": {"status":"in_transit"}}),
-    ("POST",   f"/api/receipts/{oid}",         admin_sess,    {"json": {"pdfUrl":"https://ex.com/r.pdf"}}),
-]
-
-# ─── Render Results ─────────────────────────────────────────────────────────────
 
 table = Table(title="API Test Results", show_lines=True)
 table.add_column("Method", style="bold")
 table.add_column("Endpoint")
 table.add_column("User")
+table.add_column("Expected")
 table.add_column("Result", justify="center")
 
-for method, path, sess, kwargs in tests:
-    ok, status = test_endpoint(sess, method, path, **kwargs)
+for method, path, sess, kwargs, expected in tests:
+    try:
+        resp = run(sess, method, path, **kwargs)
+        status = resp.status_code
+    except Exception:
+        status = None
     user = "ADMIN" if sess is admin_sess else "CUSTOMER"
-    mark = "[green]✔[/green]" if ok else f"[red]✖ ({status})[/red]"
-    table.add_row(method, path, user, mark)
+    table.add_row(method, path, user, ",".join(map(str, sorted(expected))), result_mark(status, expected))
 
 console.print(table)

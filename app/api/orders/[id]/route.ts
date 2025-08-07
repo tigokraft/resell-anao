@@ -1,12 +1,23 @@
+// app/api/orders/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth";
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const { user } = await requireAuth(req);
+// GET /api/orders/:id (customer)
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const sessionOrResponse = await requireAuth(req);
+  if (sessionOrResponse instanceof Response) return sessionOrResponse;
+
+  const { id } = await params;
+  const userId = (sessionOrResponse.user as any).id;
+
   const order = await prisma.order.findFirst({
-    where: { id: params.id, userId: user.id },
-    include: { items: { include: { product: true } }, shipment: true, receipt: true },
+    where: { id, userId },
+    include: {
+      items: { include: { product: true } },
+      shipment: true,
+      receipt: true,
+    },
   });
   if (!order) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(order);
