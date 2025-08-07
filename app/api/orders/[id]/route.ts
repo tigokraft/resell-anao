@@ -1,16 +1,16 @@
 // app/api/orders/[id]/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ok, notFound } from "@/lib/http";
 import { requireAuth } from "@/lib/auth";
 
-// GET /api/orders/:id (customer)
+// GET /api/orders/:id
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const sessionOrResponse = await requireAuth(req);
   if (sessionOrResponse instanceof Response) return sessionOrResponse;
-
-  const { id } = await params;
   const userId = (sessionOrResponse.user as any).id;
 
+  const { id } = await params;
   const order = await prisma.order.findFirst({
     where: { id, userId },
     include: {
@@ -19,6 +19,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       receipt: true,
     },
   });
-  if (!order) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(order);
+  if (!order) return notFound();
+  return ok(order);
 }

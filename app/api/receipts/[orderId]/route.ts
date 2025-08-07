@@ -1,21 +1,24 @@
 // app/api/receipts/[orderId]/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ok, created, badRequest } from "@/lib/http";
 import { requireAdmin } from "@/lib/auth";
+import { receiptCreateSchema } from "@/lib/validation";
 
-// POST /api/receipts/:orderId (admin)
+// POST /api/receipts/:orderId  { pdfUrl }
 export async function POST(req: NextRequest, { params }: { params: Promise<{ orderId: string }> }) {
   const sessionOrResponse = await requireAdmin(req);
   if (sessionOrResponse instanceof Response) return sessionOrResponse;
 
   const { orderId } = await params;
-  const { pdfUrl } = await req.json();
+  const json = await req.json().catch(() => null);
+  const parsed = receiptCreateSchema.safeParse(json);
+  if (!parsed.success) return badRequest("Invalid receipt body", parsed.error.flatten());
 
   const receipt = await prisma.receipt.upsert({
     where: { orderId },
-    create: { orderId, pdfUrl },
-    update: { pdfUrl, createdAt: new Date() },
+    create: { orderId, ...parsed.data },
+    update: { ...parsed.data },
   });
-
-  return NextResponse.json(receipt);
+  return created(receipt, `/api/receipts/${orderId}`);
 }
