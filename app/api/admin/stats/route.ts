@@ -1,25 +1,33 @@
-import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { ok, forbidden } from "@/lib/http";
+import { requireAdmin } from "@/lib/auth";
 
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session || session.user.role !== "ADMIN") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+export async function GET(req: Request) {
+  const resOrSession = await requireAdmin(req as any);
+  if (resOrSession instanceof Response) return resOrSession;
 
-  const [totalUsers, totalOrders, totalRevenue, lowStock] = await Promise.all([
+  const [totalUsers, totalOrders, totals, topProducts, lowStock, byStatus] = await Promise.all([
     prisma.user.count(),
     prisma.order.count(),
     prisma.order.aggregate({ _sum: { total: true } }),
-    prisma.product.findMany({ where: { stock: { lt: 5 } } }),
+    prisma.orderItem.groupBy({
+      by: ["productId"],
+      _sum: { quantity: true, price: true },
+      orderBy: { _sum: { quantity: "desc" } },
+      take: 5,
+    }),
+    prisma.product.findMany({ where: { stock: { lt: 5 } }, orderBy: { stock: "asc" }, take: 10 }),
+    prisma.order.groupBy({ by: ["status"], _count: { _all: true } }),
   ]);
 
-  return NextResponse.json({
+  const revenue = totals._sum.total ?? 0;
+
+  return ok({
     totalUsers,
     totalOrders,
-    totalRevenue: totalRevenue._sum.total || 0,
+    revenue,
+    topProducts,
     lowStock,
+    byStatus,
   });
 }

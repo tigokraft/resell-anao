@@ -1,28 +1,25 @@
-import { NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { ok, badRequest, notFound } from "@/lib/http";
+import { requireAdmin } from "@/lib/auth";
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
-  const session = await getServerSession(authOptions);
-  if (!session || session.user.role !== "ADMIN") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const resOrSession = await requireAdmin(req);
+  if (resOrSession instanceof Response) return resOrSession;
 
-  const { name } = await req.json();
-  const updated = await prisma.category.update({
-    where: { id: params.id },
-    data: { name },
-  });
-  return NextResponse.json(updated);
+  const { id } = await params;
+  const { name } = await req.json().catch(() => ({}));
+  if (!name) return badRequest("Name is required");
+
+  const updated = await prisma.category.update({ where: { id }, data: { name } });
+  return ok(updated);
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
-  const session = await getServerSession(authOptions);
-  if (!session || session.user.role !== "ADMIN") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const resOrSession = await requireAdmin(req);
+  if (resOrSession instanceof Response) return resOrSession;
 
-  await prisma.category.delete({ where: { id: params.id } });
-  return NextResponse.json({ success: true });
+  const { id } = await params;
+  await prisma.category.delete({ where: { id } });
+  return ok({ success: true });
 }

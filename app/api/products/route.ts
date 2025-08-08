@@ -1,26 +1,27 @@
-// app/api/products/route.ts
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ok, created, badRequest } from "@/lib/http";
 import { requireAdmin } from "@/lib/auth";
 import { productCreateSchema } from "@/lib/validation";
 
-// GET /api/products?query=&min=&max=&limit=&cursor=
+// GET /api/products?q=&min=&max=&limit=&cursor=&category=
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const query = searchParams.get("query") ?? undefined;
+  const q = searchParams.get("q") ?? undefined;
   const min = searchParams.get("min");
   const max = searchParams.get("max");
+  const category = searchParams.get("category") ?? undefined;
   const limit = Math.min(Number(searchParams.get("limit") ?? 20), 100);
   const cursor = searchParams.get("cursor") ?? undefined;
 
   const where: any = {};
-  if (query) where.name = { contains: query, mode: "insensitive" };
+  if (q) where.name = { contains: q, mode: "insensitive" };
   if (min || max) {
     where.price = {};
     if (min) where.price.gte = Number(min);
     if (max) where.price.lte = Number(max);
   }
+  if (category) where.categoryId = category;
 
   const products = await prisma.product.findMany({
     where,
@@ -36,13 +37,16 @@ export async function GET(req: NextRequest) {
 
 // POST /api/products (admin)
 export async function POST(req: NextRequest) {
-  const sessionOrResponse = await requireAdmin(req);
-  if (sessionOrResponse instanceof Response) return sessionOrResponse;
+  const resOrSession = await requireAdmin(req);
+  if (resOrSession instanceof Response) return resOrSession;
 
   const json = await req.json().catch(() => null);
   const parsed = productCreateSchema.safeParse(json);
   if (!parsed.success) return badRequest("Invalid product body", parsed.error.flatten());
 
-  const product = await prisma.product.create({ data: parsed.data });
+  const data = parsed.data as any;
+  if (data.categoryId === "") data.categoryId = null;
+
+  const product = await prisma.product.create({ data });
   return created(product, `/api/products/${product.id}`);
 }

@@ -1,14 +1,15 @@
-import { NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { ok } from "@/lib/http";
+import { requireAuth } from "@/lib/auth";
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
-  const session = await getServerSession(authOptions);
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const resOrSession = await requireAuth(req);
+  if (resOrSession instanceof Response) return resOrSession;
 
-  await prisma.wishlistItem.delete({
-    where: { id: params.id, userId: session.user.id },
-  });
-  return NextResponse.json({ success: true });
+  const userId = (resOrSession.user as any).id;
+  const { id } = await params;
+
+  await prisma.wishlistItem.deleteMany({ where: { id, userId } });
+  return ok({ success: true });
 }

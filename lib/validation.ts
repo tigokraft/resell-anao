@@ -6,6 +6,8 @@ export const productCreateSchema = z.object({
   description: z.string().optional(),
   price: z.number().nonnegative(),
   imageUrl: z.string().url().optional(),
+  stock: z.number().int().min(0).default(0),
+  categoryId: z.string().min(1).optional().nullable(),
 });
 export const productUpdateSchema = productCreateSchema.partial();
 
@@ -18,14 +20,12 @@ export const cartUpdateSchema = z.object({
 });
 
 export const orderCreateSchema = z.object({
-  items: z
-    .array(
-      z.object({
-        productId: z.string().min(1),
-        quantity: z.number().int().min(1).default(1),
-      })
-    )
-    .min(1),
+  items: z.array(
+    z.object({
+      productId: z.string().min(1),
+      quantity: z.number().int().min(1).default(1),
+    })
+  ).min(1),
 });
 
 export const shipmentCreateSchema = z.object({

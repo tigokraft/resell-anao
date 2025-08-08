@@ -1,24 +1,32 @@
-import { NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { ok, badRequest } from "@/lib/http";
+import { requireAuth } from "@/lib/auth";
 
-export async function POST(_req: Request, { params }: { params: { id: string } }) {
-  const session = await getServerSession(authOptions);
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+// POST /api/orders/cancel/:id (customer, PENDING only)
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const resOrSession = await requireAuth(req);
+  if (resOrSession instanceof Response) return resOrSession;
 
-  const order = await prisma.order.findUnique({ where: { id: params.id } });
-  if (!order || order.userId !== session.user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-  if (order.status !== "PENDING") {
-    return NextResponse.json({ error: "Cannot cancel non-pending order" }, { status: 400 });
-  }
+  const userId = (resOrSession.user as any).id;
+  const { id } = await params;
+  const order = await prisma.order.findFirst({
+    where: { id, userId },
+    include: { items: true },
+  });
+  if (!order) return badRequest("Order not found or not owned by user");
+  if (order.status !== "PENDING") return badRequest("Order not cancelable");
 
-  await prisma.order.update({
-    where: { id: params.id },
-    data: { status: "CANCELLED" },
+  await prisma.$transaction(async (tx) => {
+    // restore stock
+    for (const it of order.items) {
+      await tx.product.update({
+        where: { id: it.productId },
+        data: { stock: { increment: it.quantity } },
+      });
+    }
+    await tx.order.update({ where: { id }, data: { status: "CANCELLED" } });
   });
 
-  return NextResponse.json({ success: true });
+  return ok({ success: true });
 }
