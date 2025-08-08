@@ -1,152 +1,92 @@
-#!/usr/bin/env python3
-import sys
 import requests
-from pathlib import Path
-from rich.console import Console
-from rich.table import Table
+from tabulate import tabulate
 
-def load_pyvars(path="pyvars.txt"):
-    env = {}
-    p = Path(path)
-    if not p.exists():
-        print(f"Error: '{path}' not found.")
-        sys.exit(1)
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"): continue
-        if "=" not in line: continue
-        k, v = line.split("=", 1)
-        env[k.strip()] = v.strip()
-    return env
+BASE_URL = "http://localhost:3000/api"
 
-cfg = load_pyvars()
-BASE_URL           = cfg.get("BASE_URL", "http://localhost:3000")
-ADMIN_EMAIL        = cfg["ADMIN_EMAIL"]
-ADMIN_PASSWORD     = cfg["ADMIN_PASSWORD"]
-ADMIN_NAME         = cfg.get("ADMIN_NAME", "Admin")
-CUSTOMER_EMAIL     = cfg["CUSTOMER_EMAIL"]
-CUSTOMER_PASSWORD  = cfg["CUSTOMER_PASSWORD"]
-CUSTOMER_NAME      = cfg.get("CUSTOMER_NAME", "Customer")
+ADMIN_EMAIL = "admin@vexo.com"
+ADMIN_PASS = "admin123"
+CUSTOMER_EMAIL = "joe@vexo.com"
+CUSTOMER_PASS = "joe123"
 
-console = Console()
+sessions = {
+    "ADMIN": requests.Session(),
+    "CUSTOMER": requests.Session()
+}
 
-def signup_user(email, password, name, role):
-    return requests.post(f"{BASE_URL}/api/auth/signup",
-                         json={"email": email, "password": password, "name": name, "role": role})
+def login_or_signup(role, email, password):
+    # Try login
+    r = sessions[role].post(f"{BASE_URL}/auth/login", json={"email": email, "password": password})
+    if r.status_code == 200:
+        print(f"→ Logged in as {role} ({email}), skipping signup")
+        return True
+    
+    # Signup if not exists
+    r = sessions[role].post(f"{BASE_URL}/auth/signup", json={
+        "email": email,
+        "password": password,
+        "role": role
+    })
+    if r.status_code == 201:
+        print(f"✔ {role} signed up: {email}")
+        return True
+    else:
+        print(f"✖ Signup {role} failed: {r.status_code} {r.text}")
+        return False
 
-def get_csrf_token(s):
-    r = s.get(f"{BASE_URL}/api/auth/csrf")
-    r.raise_for_status()
-    return r.json().get("csrfToken")
+def run_test(method, endpoint, role, expected_codes, payload=None):
+    if isinstance(expected_codes, int):
+        expected_codes = [expected_codes]
+    
+    func = getattr(sessions[role], method.lower())
+    r = func(f"{BASE_URL}{endpoint}", json=payload)
+    return (r.status_code in expected_codes, r.status_code, r.text)
 
-def login_session(email, password):
-    s = requests.Session()
-    token = get_csrf_token(s)
-    r = s.post(f"{BASE_URL}/api/auth/callback/credentials",
-               data={"csrfToken": token, "email": email, "password": password},
-               allow_redirects=False)
-    if r.status_code not in (200, 302):
-        raise RuntimeError(f"{email} login failed: {r.status_code} {r.text}")
-    return s
+if __name__ == "__main__":
+    print("1) Ensuring Admin & Customer…")
+    login_or_signup("ADMIN", ADMIN_EMAIL, ADMIN_PASS)
+    login_or_signup("CUSTOMER", CUSTOMER_EMAIL, CUSTOMER_PASS)
 
-def ensure_session(email, password, name, role):
-    try:
-        sess = login_session(email, password)
-        console.print(f"[yellow]→[/yellow] Logged in as {role} ({email}), skipping signup")
-        return sess
-    except:
-        console.print(f"[blue]→[/blue] No account for {email}, signing up as {role}")
-        resp = signup_user(email, password, name, role)
-        if resp.status_code not in (200, 201, 409):
-            console.print(f"[red]✖ Signup {role} failed: {resp.status_code} {resp.text}")
-            sys.exit(1)
-        if resp.status_code == 201:
-            console.print(f"[green]✔[/green] Signed up {role} ({email})")
-        return login_session(email, password)
+    print("\n2) Creating test product…")
+    ok, code, text = run_test("POST", "/products", "ADMIN", [200, 201], {
+        "name": "Test Product",
+        "price": "19.99",
+        "description": "Test description"
+    })
+    if not ok:
+        print(f"✖ Failed to create product: {code} {text}")
+        exit(1)
+    product_id = requests.utils.json.loads(text)["id"]
+    print(f"✔ Product created with ID: {product_id}")
 
-def run(sess, method, path, **kwargs):
-    return sess.request(method, f"{BASE_URL}{path}", **kwargs)
+    tests = [
+        ("GET", "/products", "ADMIN", 200),
+        ("GET", "/products", "CUSTOMER", 200),
+        ("GET", f"/products/{product_id}", "ADMIN", 200),
+        ("PATCH", f"/products/{product_id}", "ADMIN", 200, {"price": "29.99"}),
+        ("POST", "/products", "CUSTOMER", 403, {"name": "Bad", "price": "1.00"}),
+        ("PATCH", f"/products/{product_id}", "CUSTOMER", 403, {"price": "9.99"}),
+        ("DELETE", f"/products/{product_id}", "CUSTOMER", 403),
 
-def result_mark(status, expected):
-    return "[green]✔[/green]" if status in expected else f"[red]✖ ({status})[/red]"
+        # Cart
+        ("POST", "/cart", "CUSTOMER", 200, {"productId": product_id, "quantity": 1}),
+        ("GET", "/cart", "CUSTOMER", 200),
+        ("PATCH", f"/cart/{{item_id}}", "CUSTOMER", 200, {"quantity": 2}),
+        ("DELETE", f"/cart/{{item_id}}", "CUSTOMER", 200),
 
-# 1) Sessions
-console.print("[bold]1) Ensuring Admin & Customer…[/bold]")
-admin_sess    = ensure_session(ADMIN_EMAIL,   ADMIN_PASSWORD,   ADMIN_NAME,    "ADMIN")
-customer_sess = ensure_session(CUSTOMER_EMAIL, CUSTOMER_PASSWORD, CUSTOMER_NAME, "CUSTOMER")
+        # Orders
+        ("POST", "/orders", "CUSTOMER", 200),
+        ("GET", "/orders", "CUSTOMER", 200),
+        ("GET", "/orders/{{order_id}}", "CUSTOMER", 200),
 
-# 2) Create product
-console.print("\n[bold]2) Creating test product…[/bold]")
-prod_resp = run(admin_sess, "POST", "/api/products",
-                json={"name":"TestProd","price":1.23,"imageUrl":"#"})
-if prod_resp.status_code not in (200, 201):
-    console.print(f"[red]✖[/red] Create product failed: {prod_resp.status_code} {prod_resp.text}")
-    sys.exit(1)
-pid = prod_resp.json().get("id")
-console.print(f"[green]✔[/green] Product created with ID: {pid}")
+        # Shipments & Receipts
+        ("POST", "/shipments/{{order_id}}", "ADMIN", [200, 201], {"carrier": "UPS", "trackingNumber": "TRACK123"}),
+        ("PATCH", "/shipments/{{order_id}}", "ADMIN", 200, {"status": "in_transit"}),
+        ("POST", "/receipts/{{order_id}}", "ADMIN", [200, 201])
+    ]
 
-# 3) Add to cart and create order BEFORE product deletion
-cart_resp = run(customer_sess, "POST", "/api/cart",
-                json={"productId": pid, "quantity": 1})
-if cart_resp.status_code not in (200, 201):
-    console.print(f"[red]✖[/red] Add to cart failed: {cart_resp.status_code} {cart_resp.text}")
-    sys.exit(1)
-cart_item_id = cart_resp.json().get("id")
+    results = []
+    for method, endpoint, role, expected, payload in [t if len(t) == 5 else (*t, None) for t in tests]:
+        ok, code, _ = run_test(method, endpoint, role, expected, payload)
+        results.append([method, endpoint, role, expected, "✔" if ok else f"✖ ({code})"])
 
-order_resp = run(customer_sess, "POST", "/api/orders",
-                 json={"items":[{"productId": pid, "quantity": 2}]})
-if order_resp.status_code not in (200, 201):
-    console.print(f"[red]✖[/red] Create order failed: {order_resp.status_code} {order_resp.text}")
-    sys.exit(1)
-order_id = order_resp.json().get("id")
-
-# 4) Test matrix with expected statuses
-tests = [
-    # Public reads
-    ("GET",    "/api/products",                admin_sess,    {},                 {200}),
-    ("GET",    "/api/products",                customer_sess, {},                 {200}),
-
-    # Product detail + update (admin)
-    ("GET",    f"/api/products/{pid}",         admin_sess,    {},                 {200}),
-    ("PATCH",  f"/api/products/{pid}",         admin_sess,    {"json":{"price":2.34}}, {200}),
-
-    # Customer forbidden product mutations (expected 403)
-    ("POST",   "/api/products",                customer_sess, {"json":{"name":"Bad","price":9.99}}, {403}),
-    ("PATCH",  f"/api/products/{pid}",         customer_sess, {"json":{"price":9.99}}, {403}),
-    ("DELETE", f"/api/products/{pid}",         customer_sess, {},                 {403}),
-
-    # Cart (customer)
-    ("GET",    "/api/cart",                    customer_sess, {},                 {200}),
-    ("PATCH",  f"/api/cart/{cart_item_id}",    customer_sess, {"json":{"quantity":5}}, {200}),
-    ("DELETE", f"/api/cart/{cart_item_id}",    customer_sess, {},                 {200}),
-
-    # Orders (customer)
-    ("GET",    "/api/orders",                  customer_sess, {},                 {200}),
-    ("GET",    f"/api/orders/{order_id}",      customer_sess, {},                 {200}),
-
-    # Admin: shipments & receipts
-    ("POST",   f"/api/shipments/{order_id}",   admin_sess,    {"json":{"carrier":"DHL","trackingNumber":"XYZ123"}}, {200,201}),
-    ("PATCH",  f"/api/shipments/{order_id}",   admin_sess,    {"json":{"status":"in_transit"}}, {200}),
-    ("POST",   f"/api/receipts/{order_id}",    admin_sess,    {"json":{"pdfUrl":"https://ex.com/r.pdf"}}, {200,201}),
-
-    # Finally: Admin delete product (should succeed)
-    ("DELETE", f"/api/products/{pid}",         admin_sess,    {},                 {200}),
-]
-
-table = Table(title="API Test Results", show_lines=True)
-table.add_column("Method", style="bold")
-table.add_column("Endpoint")
-table.add_column("User")
-table.add_column("Expected")
-table.add_column("Result", justify="center")
-
-for method, path, sess, kwargs, expected in tests:
-    try:
-        resp = run(sess, method, path, **kwargs)
-        status = resp.status_code
-    except Exception:
-        status = None
-    user = "ADMIN" if sess is admin_sess else "CUSTOMER"
-    table.add_row(method, path, user, ",".join(map(str, sorted(expected))), result_mark(status, expected))
-
-console.print(table)
+    print(tabulate(results, headers=["Method", "Endpoint", "User", "Expected", "Result"], tablefmt="grid"))
